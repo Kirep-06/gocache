@@ -68,3 +68,66 @@ func TestRingBufWriteAt(t *testing.T) {
 		t.Fatalf("offsets changed: begin=%d end=%d", rb.Begin(), rb.End())
 	}
 }
+
+func TestRingBufSlice(t *testing.T) {
+	rb := NewRingBuf(4, 0)
+	rb.Write([]byte("abc"))
+	view, err := rb.Slice(1, 2)
+	if err != nil || string(view) != "bc" {
+		t.Fatalf("contiguous slice: data=%q err=%v", view, err)
+	}
+	view[0] = 'X'
+	if rb.data[1] != 'X' {
+		t.Fatal("contiguous slice should share storage")
+	}
+	rb.Write([]byte("def"))
+	wrapped, err := rb.Slice(2, 4)
+	if err != nil || string(wrapped) != "cdef" {
+		t.Fatalf("wrapped slice: data=%q err=%v", wrapped, err)
+	}
+	wrapped[0] = 'Y'
+	if rb.data[2] == 'Y' {
+		t.Fatal("wrapped slice should be copied")
+	}
+	if _, err := rb.Slice(1, 1); err != ErrOutOfRange {
+		t.Fatalf("expired slice: err=%v", err)
+	}
+}
+
+func TestRingBufEqualAt(t *testing.T) {
+	rb := NewRingBuf(4, 0)
+	rb.Write([]byte("abc"))
+	rb.Write([]byte("def"))
+	if !rb.EqualAt([]byte("cdef"), 2) || !rb.EqualAt([]byte("cd"), 2) {
+		t.Fatal("existing bytes should compare equal")
+	}
+	if rb.EqualAt([]byte("cdeX"), 2) || rb.EqualAt([]byte("abc"), 0) || rb.EqualAt([]byte("defg"), 3) {
+		t.Fatal("different or out-of-range bytes should not compare equal")
+	}
+}
+
+func TestRingBufInspection(t *testing.T) {
+	rb := NewRingBuf(4, 10)
+	rb.Write([]byte("ab"))
+	dump := rb.Dump()
+	dump[0] = 'X'
+	if rb.data[0] != 'a' {
+		t.Fatal("Dump should return a copy")
+	}
+	if got := rb.String(); got != "[size:4, start:10, end:12, index:2]" {
+		t.Fatalf("String()=%q", got)
+	}
+}
+
+func TestRingBufSkip(t *testing.T) {
+	rb := NewRingBuf(4, 0)
+	rb.Write([]byte("ab"))
+	before := rb.Dump()
+	rb.Skip(5)
+	if rb.Begin() != 3 || rb.End() != 7 || rb.index != 3 {
+		t.Fatalf("skip state: begin=%d end=%d index=%d", rb.Begin(), rb.End(), rb.index)
+	}
+	if string(rb.Dump()) != string(before) {
+		t.Fatal("Skip should not write data")
+	}
+}
