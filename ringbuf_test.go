@@ -131,3 +131,57 @@ func TestRingBufSkip(t *testing.T) {
 		t.Fatal("Skip should not write data")
 	}
 }
+
+func TestRingBufResize(t *testing.T) {
+	rb := NewRingBuf(4, 0)
+	rb.Write([]byte("abc"))
+	rb.Write([]byte("def"))
+	rb.Resize(8)
+	buf := make([]byte, 4)
+	if n, err := rb.ReadAt(buf, 2); n != 4 || err != nil || string(buf) != "cdef" {
+		t.Fatalf("after grow: n=%d err=%v data=%q", n, err, buf)
+	}
+	rb.Resize(3)
+	buf = make([]byte, 3)
+	if n, err := rb.ReadAt(buf, 3); n != 3 || err != nil || string(buf) != "def" {
+		t.Fatalf("after shrink: n=%d err=%v data=%q", n, err, buf)
+	}
+	if rb.Begin() != 3 || rb.End() != 6 || rb.Size() != 3 {
+		t.Fatalf("resized state: begin=%d end=%d size=%d", rb.Begin(), rb.End(), rb.Size())
+	}
+}
+
+func TestRingBufEvacuate(t *testing.T) {
+	rb := NewRingBuf(8, 0)
+	rb.Write([]byte("abcdefgh"))
+	newOff := rb.Evacuate(2, 3)
+	if newOff != 8 || rb.Begin() != 3 || rb.End() != 11 {
+		t.Fatalf("evacuated state: off=%d begin=%d end=%d", newOff, rb.Begin(), rb.End())
+	}
+	buf := make([]byte, 3)
+	if n, err := rb.ReadAt(buf, newOff); n != 3 || err != nil || string(buf) != "cde" {
+		t.Fatalf("evacuated bytes: n=%d err=%v data=%q", n, err, buf)
+	}
+	if got := rb.Evacuate(0, 2); got != -1 {
+		t.Fatalf("expired entry should not evacuate: off=%d", got)
+	}
+}
+
+func TestRingBufEvacuateAcrossWrap(t *testing.T) {
+	rb := NewRingBuf(16, 0)
+	rb.Write([]byte("fghibbbbccccddde"))
+	rb.Write([]byte("fghibbbbc"))
+	if off := rb.Evacuate(9, 3); off != rb.End()-3 {
+		t.Fatalf("first evacuation offset=%d", off)
+	}
+	off := rb.Evacuate(15, 5)
+	if off != rb.End()-5 {
+		t.Fatalf("second evacuation offset=%d", off)
+	}
+	rb.Resize(64)
+	rb.Resize(32)
+	buf := make([]byte, 5)
+	if n, err := rb.ReadAt(buf, off); n != 5 || err != nil || string(buf) != "efghi" {
+		t.Fatalf("evacuated bytes after resize: n=%d err=%v data=%q", n, err, buf)
+	}
+}

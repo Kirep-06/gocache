@@ -161,3 +161,66 @@ func (rb *RingBuf) Skip(length int64) {
 		rb.begin = rb.end - int64(len(rb.data))
 	}
 }
+
+// Resize changes capacity, discarding the oldest bytes if necessary.
+func (rb *RingBuf) Resize(newSize int) {
+	if len(rb.data) == newSize {
+		return
+	}
+	newData := make([]byte, newSize)
+	var offset int
+	if rb.end-rb.begin == int64(len(rb.data)) {
+		offset = rb.index
+	}
+	if int(rb.end-rb.begin) > newSize {
+		discard := int(rb.end-rb.begin) - newSize
+		offset = (offset + discard) % len(rb.data)
+		rb.begin = rb.end - int64(newSize)
+	}
+	n := copy(newData, rb.data[offset:])
+	if n < newSize {
+		copy(newData[n:], rb.data[:offset])
+	}
+	rb.data = newData
+	rb.index = 0
+}
+
+// Evacuate moves an existing entry to the stream end before it is overwritten.
+func (rb *RingBuf) Evacuate(off int64, length int) (newOff int64) {
+	if off < rb.begin || off+int64(length) > rb.end {
+		return -1
+	}
+	readOff := rb.getDataOff(off)
+	if readOff == rb.index {
+		rb.index += length
+		if rb.index >= len(rb.data) {
+			rb.index -= len(rb.data)
+		}
+	} else if readOff < rb.index {
+		n := copy(rb.data[rb.index:], rb.data[readOff:readOff+length])
+		rb.index += n
+		if rb.index == len(rb.data) {
+			rb.index = copy(rb.data, rb.data[readOff+n:readOff+length])
+		}
+	} else {
+		readEnd := readOff + length
+		if readEnd <= len(rb.data) {
+			rb.index += copy(rb.data[rb.index:], rb.data[readOff:readEnd])
+		} else {
+			n := copy(rb.data[rb.index:], rb.data[readOff:])
+			rb.index += n
+			tail := length - n
+			n = copy(rb.data[rb.index:], rb.data[:tail])
+			rb.index += n
+			if rb.index == len(rb.data) {
+				rb.index = copy(rb.data, rb.data[n:tail])
+			}
+		}
+	}
+	newOff = rb.end
+	rb.end += int64(length)
+	if rb.begin < rb.end-int64(len(rb.data)) {
+		rb.begin = rb.end - int64(len(rb.data))
+	}
+	return newOff
+}
