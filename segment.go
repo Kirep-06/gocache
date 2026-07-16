@@ -1,6 +1,10 @@
 package gocache
 
-import "errors"
+import (
+	"errors"
+	"sync/atomic"
+	"unsafe"
+)
 
 const HASH_ENTRY_SIZE = 16
 const ENTRY_HDR_SIZE = 24
@@ -92,4 +96,62 @@ func (seg *segment) lookupByOff(slot []entryPtr, hash16 uint16, offset int64) (i
 
 func isExpired(keyExpireAt, now uint32) bool {
 	return keyExpireAt != 0 && keyExpireAt <= now
+}
+
+func (seg *segment) expand() {
+	newSlotData := make([]entryPtr, seg.slotCap*2*256)
+	for i := 0; i < 256; i++ {
+		off := int32(i) * seg.slotCap
+		copy(newSlotData[off*2:], seg.slotsData[off:off+seg.slotLens[i]])
+	}
+	seg.slotCap *= 2
+	seg.slotsData = newSlotData
+}
+
+func (seg *segment) insertEntryPtr(slotId uint8, hash16 uint16, offset int64, idx int, keyLen uint16) {
+	if seg.slotLens[slotId] == seg.slotCap {
+		seg.expand()
+	}
+	seg.slotLens[slotId]++
+	atomic.AddInt64(&seg.entryCount, 1)
+	slot := seg.getSlot(slotId)
+	copy(slot[idx+1:], slot[idx:])
+	slot[idx] = entryPtr{offset: offset, hash16: hash16, keyLen: keyLen}
+}
+
+func (seg *segment) lookup(slot []entryPtr, hash16 uint16, key []byte) (idx int, match bool) {
+	idx = entryPtrIdx(slot, hash16)
+	for idx < len(slot) && slot[idx].hash16 == hash16 {
+		ptr := &slot[idx]
+		if int(ptr.keyLen) == len(key) && seg.rb.EqualAt(key, ptr.offset+ENTRY_HDR_SIZE) {
+			return idx, true
+		}
+		idx++
+	}
+	return idx, false
+}
+
+func (seg *segment) updateEntryPtr(slotId uint8, hash16 uint16, oldOff, newOff int64) {
+	slot := seg.getSlot(slotId)
+	if idx, found := seg.lookupByOff(slot, hash16, oldOff); found {
+		slot[idx].offset = newOff
+	}
+}
+
+func (seg *segment) delEntryPtrByOffset(slotId uint8, hash16 uint16, offset int64) {
+	slot := seg.getSlot(slotId)
+	if idx, found := seg.lookupByOff(slot, hash16, offset); found {
+		seg.delEntryPtr(slotId, slot, idx)
+	}
+}
+
+func (seg *segment) delEntryPtr(slotId uint8, slot []entryPtr, idx int) {
+	var hdrBuf [ENTRY_HDR_SIZE]byte
+	seg.rb.ReadAt(hdrBuf[:], slot[idx].offset)
+	hdr := (*entryHdr)(unsafe.Pointer(&hdrBuf[0]))
+	hdr.deleted = true
+	seg.rb.WriteAt(hdrBuf[:], slot[idx].offset)
+	copy(slot[idx:], slot[idx+1:])
+	seg.slotLens[slotId]--
+	atomic.AddInt64(&seg.entryCount, -1)
 }
