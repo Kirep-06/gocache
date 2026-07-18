@@ -155,3 +155,45 @@ func (seg *segment) delEntryPtr(slotId uint8, slot []entryPtr, idx int) {
 	seg.slotLens[slotId]--
 	atomic.AddInt64(&seg.entryCount, -1)
 }
+
+// evacuate frees enough ring space for the next entry while retaining hot data.
+func (seg *segment) evacuate(entryLen int64, slotId uint8, now uint32) (slotModified bool) {
+	var oldHdrBuf [ENTRY_HDR_SIZE]byte
+	consecutiveEvacuate := 0
+	for seg.vacuumLen < entryLen {
+		oldOff := seg.rb.End() + seg.vacuumLen - seg.rb.Size()
+		seg.rb.ReadAt(oldHdrBuf[:], oldOff)
+		oldHdr := (*entryHdr)(unsafe.Pointer(&oldHdrBuf[0]))
+		oldEntryLen := ENTRY_HDR_SIZE + int64(oldHdr.keyLen) + int64(oldHdr.valCap)
+		if oldHdr.deleted {
+			consecutiveEvacuate = 0
+			atomic.AddInt64(&seg.totalTime, -int64(oldHdr.accessTime))
+			atomic.AddInt64(&seg.totalCount, -1)
+			seg.vacuumLen += oldEntryLen
+			continue
+		}
+		expired := isExpired(oldHdr.expireAt, now)
+		leastRecentUsed := int64(oldHdr.accessTime)*atomic.LoadInt64(&seg.totalCount) <= atomic.LoadInt64(&seg.totalTime)
+		if expired || leastRecentUsed || consecutiveEvacuate > 5 {
+			seg.delEntryPtrByOffset(oldHdr.slotId, oldHdr.hash16, oldOff)
+			if oldHdr.slotId == slotId {
+				slotModified = true
+			}
+			consecutiveEvacuate = 0
+			atomic.AddInt64(&seg.totalTime, -int64(oldHdr.accessTime))
+			atomic.AddInt64(&seg.totalCount, -1)
+			seg.vacuumLen += oldEntryLen
+			if expired {
+				atomic.AddInt64(&seg.totalExpired, 1)
+			} else {
+				atomic.AddInt64(&seg.totalEvacuate, 1)
+			}
+		} else {
+			newOff := seg.rb.Evacuate(oldOff, int(oldEntryLen))
+			seg.updateEntryPtr(oldHdr.slotId, oldHdr.hash16, oldOff, newOff)
+			consecutiveEvacuate++
+			atomic.AddInt64(&seg.totalEvacuate, 1)
+		}
+	}
+	return slotModified
+}

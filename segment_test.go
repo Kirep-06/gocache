@@ -78,3 +78,45 @@ func TestSegmentInsertAndFindEntries(t *testing.T) {
 		t.Fatal("entry pointer offset should update")
 	}
 }
+
+func TestSegmentReclaimsExpiredEntry(t *testing.T) {
+	seg := newSegment(64, 0, defaultTimer{})
+	hdr := entryHdr{accessTime: 10, expireAt: 20, keyLen: 1, hash16: 4, valLen: 1, valCap: 1, slotId: 3}
+	hdrBytes := unsafe.Slice((*byte)(unsafe.Pointer(&hdr)), ENTRY_HDR_SIZE)
+	seg.rb.Write(hdrBytes)
+	seg.rb.Write([]byte("k"))
+	seg.rb.Write([]byte("v"))
+	seg.insertEntryPtr(3, 4, 0, 0, 1)
+	seg.totalCount = 1
+	seg.totalTime = 10
+	seg.vacuumLen -= ENTRY_HDR_SIZE + 2
+	if !seg.evacuate(40, 3, 30) {
+		t.Fatal("target slot should be marked modified")
+	}
+	if seg.entryCount != 0 || seg.totalExpired != 1 || seg.vacuumLen != 64 {
+		t.Fatalf("reclaim state: entries=%d expired=%d vacuum=%d", seg.entryCount, seg.totalExpired, seg.vacuumLen)
+	}
+}
+
+func TestSegmentKeepsHotEntryWhenReclaiming(t *testing.T) {
+	seg := newSegment(80, 0, defaultTimer{})
+	for _, item := range []struct {
+		key    byte
+		access uint32
+		slot   uint8
+	}{{'a', 100, 3}, {'b', 1, 4}} {
+		hdr := entryHdr{accessTime: item.access, keyLen: 1, hash16: uint16(item.slot), valLen: 1, valCap: 1, slotId: item.slot}
+		off := seg.rb.End()
+		seg.rb.Write(unsafe.Slice((*byte)(unsafe.Pointer(&hdr)), ENTRY_HDR_SIZE))
+		seg.rb.Write([]byte{item.key, 'v'})
+		seg.insertEntryPtr(item.slot, hdr.hash16, off, 0, 1)
+		seg.vacuumLen -= ENTRY_HDR_SIZE + 2
+	}
+	seg.totalCount, seg.totalTime = 2, 101
+	if !seg.evacuate(30, 4, 100) {
+		t.Fatal("eviction should modify the second slot")
+	}
+	if seg.entryCount != 1 || seg.getSlot(3)[0].offset != 52 || len(seg.getSlot(4)) != 0 {
+		t.Fatalf("hot entry should move, cold entry should leave: entries=%d hot=%+v", seg.entryCount, seg.getSlot(3))
+	}
+}
