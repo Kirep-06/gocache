@@ -120,3 +120,38 @@ func TestSegmentKeepsHotEntryWhenReclaiming(t *testing.T) {
 		t.Fatalf("hot entry should move, cold entry should leave: entries=%d hot=%+v", seg.entryCount, seg.getSlot(3))
 	}
 }
+
+func TestSegmentStoreAndRead(t *testing.T) {
+	seg := newSegment(1024, 0, defaultTimer{})
+	const hash = uint64(3<<8 | 5<<16)
+	if err := seg.set([]byte("k"), []byte("one"), hash, 0); err != nil {
+		t.Fatal(err)
+	}
+	value, _, err := seg.get([]byte("k"), nil, hash, false)
+	if err != nil || string(value) != "one" {
+		t.Fatalf("first read: value=%q err=%v", value, err)
+	}
+	if err := seg.set([]byte("k"), []byte("two"), hash, 0); err != nil {
+		t.Fatal(err)
+	}
+	value, _, err = seg.get([]byte("k"), nil, hash, false)
+	if err != nil || string(value) != "two" || seg.entryCount != 1 || seg.overwrites != 1 {
+		t.Fatalf("overwrite: value=%q err=%v count=%d overwrites=%d", value, err, seg.entryCount, seg.overwrites)
+	}
+	if _, _, err := seg.get([]byte("missing"), nil, hash, false); err != ErrNotFound {
+		t.Fatalf("missing key: err=%v", err)
+	}
+	if err := seg.set([]byte("k"), []byte("longer-value"), hash, 0); err != nil {
+		t.Fatal(err)
+	}
+	value, _, err = seg.get([]byte("k"), nil, hash, false)
+	if err != nil || string(value) != "longer-value" || seg.entryCount != 1 {
+		t.Fatalf("larger overwrite: value=%q err=%v count=%d", value, err, seg.entryCount)
+	}
+	if err := seg.set(make([]byte, 65536), nil, hash, 0); err != ErrLargeKey {
+		t.Fatalf("large key: err=%v", err)
+	}
+	if err := seg.set([]byte("k"), make([]byte, 300), hash, 0); err != ErrLargeEntry {
+		t.Fatalf("large entry: err=%v", err)
+	}
+}
