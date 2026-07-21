@@ -306,3 +306,66 @@ func (seg *segment) get(key, buf []byte, hashVal uint64, peek bool) ([]byte, uin
 	}
 	return buf, hdr.expireAt, nil
 }
+
+func (seg *segment) touch(key []byte, hashVal uint64, expireSeconds int) error {
+	if len(key) > 65535 {
+		return ErrLargeKey
+	}
+	slotId, hash16 := uint8(hashVal>>8), uint16(hashVal>>16)
+	slot := seg.getSlot(slotId)
+	idx, match := seg.lookup(slot, hash16, key)
+	if !match {
+		return ErrNotFound
+	}
+	ptr := &slot[idx]
+	var hdrBuf [ENTRY_HDR_SIZE]byte
+	seg.rb.ReadAt(hdrBuf[:], ptr.offset)
+	hdr := (*entryHdr)(unsafe.Pointer(&hdrBuf[0]))
+	now := seg.timer.Now()
+	if isExpired(hdr.expireAt, now) {
+		seg.delEntryPtr(slotId, slot, idx)
+		atomic.AddInt64(&seg.totalExpired, 1)
+		atomic.AddInt64(&seg.missCount, 1)
+		return ErrNotFound
+	}
+	expireAt := uint32(0)
+	if expireSeconds > 0 {
+		expireAt = now + uint32(expireSeconds)
+	}
+	atomic.AddInt64(&seg.totalTime, int64(now)-int64(hdr.accessTime))
+	hdr.accessTime, hdr.expireAt = now, expireAt
+	seg.rb.WriteAt(hdrBuf[:], ptr.offset)
+	atomic.AddInt64(&seg.touched, 1)
+	return nil
+}
+
+func (seg *segment) ttl(key []byte, hashVal uint64) (uint32, error) {
+	slotId, hash16 := uint8(hashVal>>8), uint16(hashVal>>16)
+	slot := seg.getSlot(slotId)
+	idx, match := seg.lookup(slot, hash16, key)
+	if !match {
+		return 0, ErrNotFound
+	}
+	var hdrBuf [ENTRY_HDR_SIZE]byte
+	seg.rb.ReadAt(hdrBuf[:], slot[idx].offset)
+	hdr := (*entryHdr)(unsafe.Pointer(&hdrBuf[0]))
+	if hdr.expireAt == 0 {
+		return 0, nil
+	}
+	now := seg.timer.Now()
+	if isExpired(hdr.expireAt, now) {
+		return 0, ErrNotFound
+	}
+	return hdr.expireAt - now, nil
+}
+
+func (seg *segment) del(key []byte, hashVal uint64) bool {
+	slotId, hash16 := uint8(hashVal>>8), uint16(hashVal>>16)
+	slot := seg.getSlot(slotId)
+	idx, match := seg.lookup(slot, hash16, key)
+	if !match {
+		return false
+	}
+	seg.delEntryPtr(slotId, slot, idx)
+	return true
+}

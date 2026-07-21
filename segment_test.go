@@ -5,6 +5,10 @@ import (
 	"unsafe"
 )
 
+type testTimer struct{ now uint32 }
+
+func (timer *testTimer) Now() uint32 { return timer.now }
+
 func TestSegmentLayoutAndSlots(t *testing.T) {
 	if unsafe.Sizeof(entryPtr{}) != HASH_ENTRY_SIZE || unsafe.Sizeof(entryHdr{}) != ENTRY_HDR_SIZE {
 		t.Fatal("entry layout does not match serialized sizes")
@@ -153,5 +157,32 @@ func TestSegmentStoreAndRead(t *testing.T) {
 	}
 	if err := seg.set([]byte("k"), make([]byte, 300), hash, 0); err != ErrLargeEntry {
 		t.Fatalf("large entry: err=%v", err)
+	}
+}
+
+func TestSegmentExpirationAndDelete(t *testing.T) {
+	clock := &testTimer{now: 100}
+	seg := newSegment(1024, 0, clock)
+	const hash = uint64(3<<8 | 5<<16)
+	if err := seg.set([]byte("k"), []byte("v"), hash, 5); err != nil {
+		t.Fatal(err)
+	}
+	if ttl, err := seg.ttl([]byte("k"), hash); ttl != 5 || err != nil {
+		t.Fatalf("initial TTL: ttl=%d err=%v", ttl, err)
+	}
+	clock.now = 103
+	if err := seg.touch([]byte("k"), hash, 10); err != nil {
+		t.Fatal(err)
+	}
+	if ttl, err := seg.ttl([]byte("k"), hash); ttl != 10 || err != nil {
+		t.Fatalf("renewed TTL: ttl=%d err=%v", ttl, err)
+	}
+	clock.now = 113
+	if _, _, err := seg.get([]byte("k"), nil, hash, false); err != ErrNotFound || seg.entryCount != 0 {
+		t.Fatalf("expired entry: err=%v count=%d", err, seg.entryCount)
+	}
+	seg.set([]byte("other"), []byte("v"), hash, 0)
+	if !seg.del([]byte("other"), hash) || seg.del([]byte("other"), hash) {
+		t.Fatal("delete should affect an existing key once")
 	}
 }
