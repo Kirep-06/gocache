@@ -186,3 +186,28 @@ func TestSegmentExpirationAndDelete(t *testing.T) {
 		t.Fatal("delete should affect an existing key once")
 	}
 }
+
+func TestSegmentViewAndClear(t *testing.T) {
+	seg := newSegment(1024, 0, defaultTimer{})
+	const hash = uint64(3<<8 | 5<<16)
+	seg.set([]byte("k"), []byte("value"), hash, 0)
+	if err := seg.view([]byte("k"), func(value []byte) error {
+		if string(value) != "value" {
+			t.Fatalf("viewed value=%q", value)
+		}
+		return nil
+	}, hash, false); err != nil {
+		t.Fatal(err)
+	}
+	if seg.hitCount != 1 {
+		t.Fatalf("view hit count=%d", seg.hitCount)
+	}
+	seg.resetStatistics()
+	if seg.hitCount != 0 || seg.entryCount != 1 {
+		t.Fatalf("statistics reset should keep entries: hits=%d entries=%d", seg.hitCount, seg.entryCount)
+	}
+	seg.clear()
+	if seg.entryCount != 0 || seg.rb.End() != 0 || seg.vacuumLen != 1024 {
+		t.Fatalf("clear state: entries=%d end=%d vacuum=%d", seg.entryCount, seg.rb.End(), seg.vacuumLen)
+	}
+}

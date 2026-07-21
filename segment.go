@@ -369,3 +369,46 @@ func (seg *segment) del(key []byte, hashVal uint64) bool {
 	seg.delEntryPtr(slotId, slot, idx)
 	return true
 }
+
+func (seg *segment) view(key []byte, fn func([]byte) error, hashVal uint64, peek bool) error {
+	hdr, off, err := seg.locate(key, hashVal, peek)
+	if err != nil {
+		return err
+	}
+	value, err := seg.rb.Slice(off+ENTRY_HDR_SIZE+int64(hdr.keyLen), int64(hdr.valLen))
+	if err != nil {
+		return err
+	}
+	err = fn(value)
+	if !peek {
+		atomic.AddInt64(&seg.hitCount, 1)
+	}
+	return err
+}
+
+func (seg *segment) resetStatistics() {
+	atomic.StoreInt64(&seg.totalEvacuate, 0)
+	atomic.StoreInt64(&seg.totalExpired, 0)
+	atomic.StoreInt64(&seg.overwrites, 0)
+	atomic.StoreInt64(&seg.hitCount, 0)
+	atomic.StoreInt64(&seg.missCount, 0)
+}
+
+func (seg *segment) clear() {
+	bufSize := len(seg.rb.data)
+	seg.rb.Reset(0)
+	seg.vacuumLen = int64(bufSize)
+	seg.slotCap = 1
+	seg.slotsData = make([]entryPtr, 256*seg.slotCap)
+	for i := range seg.slotLens {
+		seg.slotLens[i] = 0
+	}
+	atomic.StoreInt64(&seg.hitCount, 0)
+	atomic.StoreInt64(&seg.missCount, 0)
+	atomic.StoreInt64(&seg.entryCount, 0)
+	atomic.StoreInt64(&seg.totalCount, 0)
+	atomic.StoreInt64(&seg.totalTime, 0)
+	atomic.StoreInt64(&seg.totalEvacuate, 0)
+	atomic.StoreInt64(&seg.totalExpired, 0)
+	atomic.StoreInt64(&seg.overwrites, 0)
+}
