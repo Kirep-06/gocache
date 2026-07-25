@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCacheBasicOperations(t *testing.T) {
@@ -49,4 +50,51 @@ func TestCacheConcurrentSegments(t *testing.T) {
 		}(i)
 	}
 	workers.Wait()
+}
+
+func TestCacheReadModes(t *testing.T) {
+	clock := &testTimer{now: 100}
+	cache := NewCacheCustomTimer(512*1024, clock)
+	key := []byte("key")
+	cache.Set(key, []byte("value"), 5)
+	buf := make([]byte, 0, 16)
+	value, expireAt, err := cache.GetWithExpirationAndBuf(key, buf)
+	if err != nil || expireAt != 105 || string(value) != "value" || &value[0] != &buf[:cap(buf)][0] {
+		t.Fatalf("buffered read: value=%q expiry=%d err=%v", value, expireAt, err)
+	}
+	if err := cache.GetFn(key, func(v []byte) error {
+		if string(v) != "value" {
+			t.Fatalf("view=%q", v)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = 106
+	if value, err := cache.Peek(key); err != nil || string(value) != "value" {
+		t.Fatalf("peek expired value: value=%q err=%v", value, err)
+	}
+	if _, err := cache.Get(key); err != ErrNotFound {
+		t.Fatalf("expired get: err=%v", err)
+	}
+}
+
+func TestGetFnPanicReleasesSegmentLock(t *testing.T) {
+	cache := NewCache(512 * 1024)
+	key := []byte("key")
+	cache.Set(key, []byte("value"), 0)
+	func() {
+		defer func() { recover() }()
+		cache.GetFn(key, func([]byte) error { panic("callback failed") })
+	}()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cache.Set(key, []byte("next"), 0)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("callback panic left the segment locked")
+	}
 }

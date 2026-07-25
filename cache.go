@@ -81,3 +81,55 @@ func (cache *Cache) Del(key []byte) bool {
 	defer cache.locks[segID].Unlock()
 	return cache.segments[segID].del(key, hashVal)
 }
+
+func (cache *Cache) GetWithBuf(key, buf []byte) ([]byte, error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	value, _, err := cache.segments[segID].get(key, buf, hashVal, false)
+	return value, err
+}
+
+func (cache *Cache) GetWithExpiration(key []byte) ([]byte, uint32, error) {
+	return cache.GetWithExpirationAndBuf(key, nil)
+}
+
+func (cache *Cache) GetWithExpirationAndBuf(key, buf []byte) ([]byte, uint32, error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	return cache.segments[segID].get(key, buf, hashVal, false)
+}
+
+// Peek reads an entry without checking expiration or updating statistics.
+func (cache *Cache) Peek(key []byte) ([]byte, error) {
+	value, _, err := cache.PeekWithExpiration(key)
+	return value, err
+}
+
+func (cache *Cache) PeekWithExpiration(key []byte) ([]byte, uint32, error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	return cache.segments[segID].get(key, nil, hashVal, true)
+}
+
+// GetFn calls fn while the segment lock protects a view of the value.
+func (cache *Cache) GetFn(key []byte, fn func([]byte) error) error {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	return cache.segments[segID].view(key, fn, hashVal, false)
+}
+
+func (cache *Cache) PeekFn(key []byte, fn func([]byte) error) error {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	return cache.segments[segID].view(key, fn, hashVal, true)
+}
