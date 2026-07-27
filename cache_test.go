@@ -2,6 +2,7 @@ package gocache
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -96,5 +97,40 @@ func TestGetFnPanicReleasesSegmentLock(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("callback panic left the segment locked")
+	}
+}
+
+func TestCacheAtomicUpdates(t *testing.T) {
+	cache := NewCache(512 * 1024)
+	key := []byte("counter")
+	if old, err := cache.GetOrSet(key, []byte("0"), 0); old != nil || err != nil {
+		t.Fatalf("new GetOrSet: old=%q err=%v", old, err)
+	}
+	if old, err := cache.GetOrSet(key, []byte("ignored"), 0); string(old) != "0" || err != nil {
+		t.Fatalf("existing GetOrSet: old=%q err=%v", old, err)
+	}
+	if old, found, err := cache.SetAndGet(key, []byte("1"), 0); string(old) != "0" || !found || err != nil {
+		t.Fatalf("SetAndGet: old=%q found=%v err=%v", old, found, err)
+	}
+	var workers sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			_, _, err := cache.Update(key, func(value []byte, found bool) ([]byte, bool, int) {
+				if !found {
+					t.Error("counter disappeared")
+				}
+				n, _ := strconv.Atoi(string(value))
+				return []byte(strconv.Itoa(n + 1)), true, 0
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	workers.Wait()
+	if value, err := cache.Get(key); string(value) != "21" || err != nil {
+		t.Fatalf("atomic update result: value=%q err=%v", value, err)
 	}
 }

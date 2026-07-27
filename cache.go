@@ -18,6 +18,8 @@ type Cache struct {
 	segments [segmentCount]segment
 }
 
+type Updater func(value []byte, found bool) (newValue []byte, replace bool, expireSeconds int)
+
 func hashFunc(data []byte) uint64 {
 	return xxhash.Sum64(data)
 }
@@ -132,4 +134,41 @@ func (cache *Cache) PeekFn(key []byte, fn func([]byte) error) error {
 	cache.locks[segID].Lock()
 	defer cache.locks[segID].Unlock()
 	return cache.segments[segID].view(key, fn, hashVal, true)
+}
+
+func (cache *Cache) GetOrSet(key, value []byte, expireSeconds int) ([]byte, error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	current, _, err := cache.segments[segID].get(key, nil, hashVal, false)
+	if err == nil {
+		return current, nil
+	}
+	return nil, cache.segments[segID].set(key, value, hashVal, expireSeconds)
+}
+
+func (cache *Cache) SetAndGet(key, value []byte, expireSeconds int) ([]byte, bool, error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	current, _, err := cache.segments[segID].get(key, nil, hashVal, false)
+	found := err == nil
+	err = cache.segments[segID].set(key, value, hashVal, expireSeconds)
+	return current, found, err
+}
+
+func (cache *Cache) Update(key []byte, updater Updater) (found, replaced bool, err error) {
+	hashVal := hashFunc(key)
+	segID := hashVal & segmentAndOpVal
+	cache.locks[segID].Lock()
+	defer cache.locks[segID].Unlock()
+	current, _, getErr := cache.segments[segID].get(key, nil, hashVal, false)
+	found = getErr == nil
+	value, replaced, expireSeconds := updater(current, found)
+	if !replaced {
+		return found, false, nil
+	}
+	return found, true, cache.segments[segID].set(key, value, hashVal, expireSeconds)
 }
