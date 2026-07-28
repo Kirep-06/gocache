@@ -172,3 +172,34 @@ func (cache *Cache) Update(key []byte, updater Updater) (found, replaced bool, e
 	}
 	return found, true, cache.segments[segID].set(key, value, hashVal, expireSeconds)
 }
+
+// MultiGet returns one value and error per key, locking each segment once.
+func (cache *Cache) MultiGet(keys [][]byte) (values [][]byte, errs []error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	values = make([][]byte, len(keys))
+	errs = make([]error, len(keys))
+	type keyLoc struct {
+		idx     int
+		hashVal uint64
+	}
+	var groups [segmentCount][]keyLoc
+	for i, key := range keys {
+		hashVal := hashFunc(key)
+		segID := hashVal & segmentAndOpVal
+		groups[segID] = append(groups[segID], keyLoc{idx: i, hashVal: hashVal})
+	}
+	for segID, batch := range groups {
+		if len(batch) == 0 {
+			continue
+		}
+		cache.locks[segID].Lock()
+		for _, loc := range batch {
+			value, _, err := cache.segments[segID].get(keys[loc.idx], nil, loc.hashVal, false)
+			values[loc.idx], errs[loc.idx] = value, err
+		}
+		cache.locks[segID].Unlock()
+	}
+	return values, errs
+}

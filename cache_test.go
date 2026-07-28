@@ -134,3 +134,23 @@ func TestCacheAtomicUpdates(t *testing.T) {
 		t.Fatalf("atomic update result: value=%q err=%v", value, err)
 	}
 }
+
+func TestCacheMultiGetPreservesInputOrder(t *testing.T) {
+	cache := NewCache(512 * 1024)
+	cache.Set([]byte("a"), []byte("A"), 0)
+	cache.Set([]byte("b"), []byte("B"), 0)
+	keys := [][]byte{[]byte("b"), []byte("missing"), []byte("a"), []byte("b")}
+	values, errs := cache.MultiGet(keys)
+	if len(values) != len(keys) || len(errs) != len(keys) {
+		t.Fatalf("result lengths: values=%d errs=%d", len(values), len(errs))
+	}
+	if string(values[0]) != "B" || values[1] != nil || string(values[2]) != "A" || string(values[3]) != "B" {
+		t.Fatalf("values=%q", values)
+	}
+	if errs[0] != nil || errs[1] != ErrNotFound || errs[2] != nil || errs[3] != nil {
+		t.Fatalf("errors=%v", errs)
+	}
+	if values, errs := cache.MultiGet(nil); values != nil || errs != nil {
+		t.Fatalf("empty batch: values=%v errs=%v", values, errs)
+	}
+}
