@@ -154,3 +154,47 @@ func TestCacheMultiGetPreservesInputOrder(t *testing.T) {
 		t.Fatalf("empty batch: values=%v errs=%v", values, errs)
 	}
 }
+
+func TestCacheIntegerKeys(t *testing.T) {
+	clock := &testTimer{now: 100}
+	cache := NewCacheCustomTimer(512*1024, clock)
+	if err := cache.SetInt(-42, []byte("value"), 5); err != nil {
+		t.Fatal(err)
+	}
+	value, expiry, err := cache.GetIntWithExpiration(-42)
+	if err != nil || string(value) != "value" || expiry != 105 {
+		t.Fatalf("integer read: value=%q expiry=%d err=%v", value, expiry, err)
+	}
+	if !cache.DelInt(-42) {
+		t.Fatal("integer key should delete")
+	}
+	if _, err := cache.GetInt(-42); err != ErrNotFound {
+		t.Fatalf("deleted integer key: err=%v", err)
+	}
+}
+
+func TestCacheStatisticsAndClear(t *testing.T) {
+	cache := NewCache(512 * 1024)
+	if cache.HitRate() != 0 || cache.AverageAccessTime() != 0 {
+		t.Fatal("empty cache statistics should be zero")
+	}
+	cache.Set([]byte("key"), []byte("value"), 0)
+	cache.Get([]byte("key"))
+	cache.Get([]byte("missing"))
+	cache.Set([]byte("key"), []byte("next"), 0)
+	cache.Touch([]byte("key"), 0)
+	if cache.EntryCount() != 1 || cache.HitCount() != 1 || cache.MissCount() != 1 || cache.LookupCount() != 2 || cache.HitRate() != 0.5 {
+		t.Fatal("lookup statistics differ from operations")
+	}
+	if cache.OverwriteCount() != 1 || cache.TouchedCount() != 1 || cache.AverageAccessTime() == 0 {
+		t.Fatal("mutation statistics differ from operations")
+	}
+	cache.ResetStatistics()
+	if cache.EntryCount() != 1 || cache.LookupCount() != 0 || cache.OverwriteCount() != 0 {
+		t.Fatal("reset statistics should preserve entries")
+	}
+	cache.Clear()
+	if cache.EntryCount() != 0 {
+		t.Fatal("clear should remove entries")
+	}
+}
