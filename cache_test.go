@@ -198,3 +198,26 @@ func TestCacheStatisticsAndClear(t *testing.T) {
 		t.Fatal("clear should remove entries")
 	}
 }
+
+func TestCacheIteratorSkipsExpiredAndCopiesValues(t *testing.T) {
+	clock := &testTimer{now: 100}
+	cache := NewCacheCustomTimer(512*1024, clock)
+	cache.Set([]byte("live"), []byte("value"), 0)
+	cache.Set([]byte("expired"), []byte("old"), 1)
+	clock.now = 101
+	entries := map[string]string{}
+	for it := cache.NewIterator(); ; {
+		entry := it.Next()
+		if entry == nil {
+			break
+		}
+		entries[string(entry.Key)] = string(entry.Value)
+		entry.Value[0] = 'X'
+	}
+	if len(entries) != 1 || entries["live"] != "value" {
+		t.Fatalf("iterated entries=%v", entries)
+	}
+	if value, err := cache.Get([]byte("live")); err != nil || string(value) != "value" {
+		t.Fatalf("iterator mutated cache: value=%q err=%v", value, err)
+	}
+}
