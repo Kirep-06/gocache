@@ -107,4 +107,41 @@ func (server *Server) ReadClient(r *bufio.Reader, req *Request) error {
 	return nil
 }
 
+func (server *Server) execute(args [][]byte) []byte {
+	unsupported := []byte("-ERR unsupported command\r\n")
+	switch {
+	case len(args) == 1 && bytes.Equal(args[0], []byte("ping")):
+		return []byte("+PONG\r\n")
+	case len(args) == 1 && bytes.Equal(args[0], []byte("dbsize")):
+		return []byte(":" + strconv.FormatInt(server.cache.EntryCount(), 10) + "\r\n")
+	case len(args) == 2 && bytes.Equal(args[0], []byte("get")):
+		value, err := server.cache.Get(args[1])
+		if err != nil {
+			return []byte("$-1\r\n")
+		}
+		var reply bytes.Buffer
+		reply.WriteString("$" + strconv.Itoa(len(value)) + "\r\n")
+		reply.Write(value)
+		reply.WriteString("\r\n")
+		return reply.Bytes()
+	case len(args) == 2 && bytes.Equal(args[0], []byte("del")):
+		if server.cache.Del(args[1]) {
+			return []byte(":1\r\n")
+		}
+		return []byte(":0\r\n")
+	case len(args) == 3 && bytes.Equal(args[0], []byte("set")):
+		server.cache.Set(args[1], args[2], 0)
+		return []byte("+OK\r\n")
+	case len(args) == 4 && bytes.Equal(args[0], []byte("setex")):
+		expire, err := btoi(args[2])
+		if err != nil {
+			return unsupported
+		}
+		server.cache.Set(args[1], args[3], expire)
+		return []byte("+OK\r\n")
+	default:
+		return unsupported
+	}
+}
+
 func main() {}
