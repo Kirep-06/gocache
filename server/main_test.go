@@ -3,7 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"io"
+	"net"
 	"testing"
+	"time"
 )
 
 func TestReadClientPipelinedRequests(t *testing.T) {
@@ -51,5 +54,24 @@ func TestServerCommands(t *testing.T) {
 		if got := string(server.execute(args)); got != tc.want {
 			t.Fatalf("%v: got %q want %q", tc.args, got, tc.want)
 		}
+	}
+}
+
+func TestServerPipelinedSession(t *testing.T) {
+	server := NewServer(512 * 1024)
+	client, serverConn := net.Pipe()
+	defer client.Close()
+	server.serveConn(serverConn)
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	requests := "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n"
+	if _, err := io.WriteString(client, requests); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, len("+OK\r\n$5\r\nvalue\r\n"))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatal(err)
+	}
+	if string(reply) != "+OK\r\n$5\r\nvalue\r\n" {
+		t.Fatalf("pipelined reply=%q", reply)
 	}
 }

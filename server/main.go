@@ -6,7 +6,14 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log"
+	"net"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
+	"runtime/debug"
 	"strconv"
+	"time"
 
 	"github.com/Kirep-06/gocache"
 )
@@ -144,4 +151,70 @@ func (server *Server) execute(args [][]byte) []byte {
 	}
 }
 
-func main() {}
+type Session struct {
+	server    *Server
+	conn      net.Conn
+	reader    *bufio.Reader
+	replyChan chan []byte
+}
+
+func (server *Server) serveConn(conn net.Conn) {
+	session := &Session{
+		server:    server,
+		conn:      conn,
+		reader:    bufio.NewReader(conn),
+		replyChan: make(chan []byte, 100),
+	}
+	go session.readLoop()
+	go session.writeLoop()
+}
+
+func (session *Session) readLoop() {
+	defer close(session.replyChan)
+	req := &Request{buf: new(bytes.Buffer)}
+	for {
+		req.Reset()
+		if err := session.server.ReadClient(session.reader, req); err != nil {
+			return
+		}
+		session.replyChan <- session.server.execute(req.args)
+	}
+}
+
+func (session *Session) writeLoop() {
+	defer session.conn.Close()
+	for reply := range session.replyChan {
+		if _, err := session.conn.Write(reply); err != nil {
+			return
+		}
+	}
+}
+
+func (server *Server) Start(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	log.Println("Listening on port", addr)
+	for {
+		if tcpListener, ok := listener.(*net.TCPListener); ok {
+			tcpListener.SetDeadline(time.Now().Add(time.Second))
+		}
+		conn, err := listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				continue
+			}
+			return err
+		}
+		server.serveConn(conn)
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU() - 1)
+	debug.SetGCPercent(10)
+	go func() { log.Println(http.ListenAndServe("localhost:6060", nil)) }()
+	log.Println(NewServer(256 * 1024 * 1024).Start(":7788"))
+}
